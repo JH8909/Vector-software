@@ -7,6 +7,7 @@ import { useStore } from '@/store/useStore';
 import { ImageInfoPanel } from '@/components/ImageInfoPanel';
 import { CompareViewer } from '@/components/CompareViewer';
 import { SettingsPanel } from '@/components/SettingsPanel';
+import { LayerPanel } from '@/components/LayerPanel';
 import { JobStatusBar } from '@/components/JobStatusBar';
 import { QualityReportPanel } from '@/components/QualityReportPanel';
 
@@ -15,6 +16,8 @@ export default function WorkspacePage() {
   const sourceDataUrl = useStore((s) => s.sourceDataUrl);
   const sourceFile = useStore((s) => s.sourceFile);
   const svgResult = useStore((s) => s.svgResult);
+  const layeredSvg = useStore((s) => s.layeredSvg);
+  const exportLayered = useStore((s) => s.exportLayered);
   const svgPreviewUrl = useStore((s) => s.svgPreviewUrl);
   const jobStatus = useStore((s) => s.jobStatus);
   const errorMessage = useStore((s) => s.errorMessage);
@@ -78,16 +81,17 @@ export default function WorkspacePage() {
     await prepareFile(file);
   }, [prepareFile]);
 
-  // ── 一键导出 SVG ──
+  // ── 一键导出 SVG（按 exportLayered 选择分层或扁平） ──
   const exportSVG = useCallback(() => {
-    if (!svgResult) return;
-    const base = (imageInfo?.name || 'vector').replace(/\.[^.]+$/,'') + '.svg';
-    const blob = new Blob([svgResult], { type: 'image/svg+xml;charset=utf-8' });
+    const out = exportLayered ? layeredSvg : svgResult;
+    if (!out) return;
+    const base = (imageInfo?.name || 'vector').replace(/\.[^.]+$/,'') + (exportLayered ? '_layered' : '') + '.svg';
+    const blob = new Blob([out], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = linkRef.current;
     if (a) { a.href = url; a.download = base; a.click(); }
     URL.revokeObjectURL(url);
-  }, [svgResult, imageInfo]);
+  }, [svgResult, layeredSvg, exportLayered, imageInfo]);
 
   return (
     <div className="h-screen flex flex-col bg-gray-50" onDragOver={onDragOver} onDrop={onDrop}>
@@ -152,7 +156,8 @@ export default function WorkspacePage() {
             <div className="flex-1 min-w-0">
               <CompareViewer />
             </div>
-            <div className="w-64 shrink-0 overflow-y-auto custom-scrollbar">
+            <div className="w-64 shrink-0 flex flex-col gap-3 overflow-y-auto custom-scrollbar">
+              <LayerPanel />
               <SettingsPanel />
             </div>
           </>

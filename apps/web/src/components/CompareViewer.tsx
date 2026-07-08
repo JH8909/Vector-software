@@ -18,6 +18,7 @@ export function CompareViewer() {
   const [splitPos, setSplitPos] = useState(50);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
   const actionRef = useRef<'split' | 'pan' | null>(null);
   const baseRef = useRef({ x: 0, y: 0, split: 50 });
 
@@ -33,79 +34,106 @@ export function CompareViewer() {
   }, [svgPreviewUrl]);
   const svg = visibleUrl || lastUrl.current;
 
-  // ── zoom actions ──
-  const fitView = useCallback(() => { setZoom(1); setPanX(0); setPanY(0); }, []);
+  // ── Zoom: mutate transform directly, skip React render cycle ──
+  const zoomRef = useRef(1);
+  const panXRef = useRef(0);
+  const panYRef = useRef(0);
 
-  const zoomBy = useCallback((factor: number, cx: number, cy: number) => {
-    setZoom(z => {
-      const next = Math.min(16, Math.max(0.05, z * factor));
-      if (next === z) return z;
-      // zoom toward cursor: keep the point under (cx,cy) fixed in the viewport
-      const ratio = next / z;
-      setPanX(px => cx - (cx - px) * ratio);
-      setPanY(py => cy - (cy - py) * ratio);
-      return next;
-    });
+  // Sync refs → React state only on final position (for toolbar % display)
+  const syncState = useCallback(() => {
+    setZoom(zoomRef.current);
+    setPanX(panXRef.current);
+    setPanY(panYRef.current);
   }, []);
 
+  // Apply transform to inner div
+  const applyTransform = useCallback(() => {
+    if (innerRef.current) {
+      innerRef.current.style.transform = `translate(${panXRef.current}px,${panYRef.current}px) scale(${zoomRef.current})`;
+    }
+  }, []);
 
-  // toolbar buttons zoom from container center
-  const zoomIn = useCallback(() => {
-    const r = containerRef.current?.getBoundingClientRect();
-    zoomBy(1.5, r ? r.width / 2 : 0, r ? r.height / 2 : 0);
-  }, [zoomBy]);
-  const zoomOut = useCallback(() => {
-    const r = containerRef.current?.getBoundingClientRect();
-    zoomBy(1 / 1.5, r ? r.width / 2 : 0, r ? r.height / 2 : 0);
-  }, [zoomBy]);
+  const fitView = useCallback(() => {
+    zoomRef.current = 1; panXRef.current = 0; panYRef.current = 0;
+    applyTransform(); syncState();
+  }, [applyTransform, syncState]);
 
-  // ── wheel: zoom centred on cursor ──
+  // Mouse-wheel zoom: direct DOM mutation, no React state
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
+    const el = containerRef.current; if (!el) return;
     const h = (e: WheelEvent) => {
       e.preventDefault();
       const rect = el.getBoundingClientRect();
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
-      zoomBy(e.deltaY > 0 ? 0.9 : 1.1, cx, cy);
+      const oldZ = zoomRef.current;
+      const newZ = Math.min(16, Math.max(0.05, oldZ * (e.deltaY > 0 ? 0.9 : 1.1)));
+      if (newZ === oldZ) return;
+      zoomRef.current = newZ;
+      // keep cursor point fixed
+      panXRef.current = cx - (cx - panXRef.current) * (newZ / oldZ);
+      panYRef.current = cy - (cy - panYRef.current) * (newZ / oldZ);
+      applyTransform();
+      // Debounce React state sync
+      if (!(el as any)._zoomTimer) {
+        (el as any)._zoomTimer = setTimeout(() => {
+          (el as any)._zoomTimer = null;
+          syncState();
+        }, 60);
+      }
     };
     el.addEventListener('wheel', h, { passive: false });
     return () => el.removeEventListener('wheel', h);
-  }, [zoomBy]);
+  }, [applyTransform, syncState]);
 
   // ── pointer ──
   const onPointerDown = useCallback((e: React.PointerEvent) => {
-    const el = e.target as HTMLElement;
-    el.setPointerCapture(e.pointerId);
-
+    const el = e.target as HTMLElement; el.setPointerCapture(e.pointerId);
     if (el.closest('[data-handle]')) {
-      // split drag — always works regardless of zoom
       actionRef.current = 'split';
       baseRef.current = { ...baseRef.current, split: splitPos };
-    } else {
-      // pan only when zoomed in; at 1× just do nothing
+    } else if (zoomRef.current > 1.02) {
       actionRef.current = 'pan';
-      baseRef.current = { x: e.clientX - panX, y: e.clientY - panY, split: 0 };
+      baseRef.current = { x: e.clientX - panXRef.current, y: e.clientY - panYRef.current, split: 0 };
     }
-  }, [panX, panY, splitPos]);
+  }, [splitPos]);
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
-    const a = actionRef.current;
-    if (!a) return;
-
-    if (a === 'pan') {
-      setPanX(e.clientX - baseRef.current.x);
-      setPanY(e.clientY - baseRef.current.y);
-    } else {
-      const r = containerRef.current?.getBoundingClientRect();
-      if (!r) return;
-      const raw = ((e.clientX - r.left) / r.width) * 100;
-      setSplitPos(Math.max(2, Math.min(98, raw)));
+    if (actionRef.current === 'pan') {
+      panXRef.current = e.clientX - baseRef.current.x;
+      panYRef.current = e.clientY - baseRef.current.y;
+      applyTransform();
+    } else if (actionRef.current === 'split') {
+      const r = containerRef.current?.getBoundingClientRect(); if (!r) return;
+      setSplitPos(Math.max(2, Math.min(98, ((e.clientX - r.left) / r.width) * 100)));
     }
-  }, []);
+  }, [applyTransform]);
 
-  const onPointerUp = useCallback(() => { actionRef.current = null; }, []);
+  const onPointerUp = useCallback(() => {
+    if (actionRef.current === 'pan') syncState();
+    actionRef.current = null;
+  }, [syncState]);
+
+  // Button zoom: from center of container
+  const zoomIn = useCallback(() => {
+    const r = containerRef.current?.getBoundingClientRect();
+    const cx = r ? r.width / 2 : 0, cy = r ? r.height / 2 : 0;
+    const oldZ = zoomRef.current; const newZ = Math.min(16, oldZ * 1.5);
+    zoomRef.current = newZ;
+    panXRef.current = cx - (cx - panXRef.current) * (newZ / oldZ);
+    panYRef.current = cy - (cy - panYRef.current) * (newZ / oldZ);
+    applyTransform(); syncState();
+  }, [applyTransform, syncState]);
+
+  const zoomOut = useCallback(() => {
+    const r = containerRef.current?.getBoundingClientRect();
+    const cx = r ? r.width / 2 : 0, cy = r ? r.height / 2 : 0;
+    const oldZ = zoomRef.current; const newZ = Math.max(0.05, oldZ / 1.5);
+    zoomRef.current = newZ;
+    panXRef.current = cx - (cx - panXRef.current) * (newZ / oldZ);
+    panYRef.current = cy - (cy - panYRef.current) * (newZ / oldZ);
+    applyTransform(); syncState();
+  }, [applyTransform, syncState]);
 
   const modes = [
     { key: 'side-by-side' as ViewMode, label: '对比', icon: Columns2 },
@@ -115,11 +143,9 @@ export function CompareViewer() {
 
   const busy = jobStatus === 'processing';
   const showEmpty = !svg && !busy && !sourceDataUrl;
-  const canPan = zoom > 1.02;
 
   return (
     <div className="compact-card h-full flex flex-col select-none">
-      {/* toolbar */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-100 shrink-0">
         <div className="flex items-center gap-1">
           {modes.map(m => (
@@ -139,35 +165,20 @@ export function CompareViewer() {
         </div>
       </div>
 
-      {/* canvas + slider overlay */}
       <div className="flex-1 relative min-h-0"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerLeave={onPointerUp}
-      >
-        {/* ── canvas (transformed layer) ── */}
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={onPointerUp}>
         <div ref={containerRef}
           className="absolute inset-0 overflow-hidden checkerboard-bg"
-          style={{ cursor: actionRef.current === 'split' ? 'col-resize' : actionRef.current === 'pan' ? 'grabbing' : canPan ? 'grab' : 'default' }}
-        >
-          <div className="absolute w-full h-full"
-            style={{ transform: `translate(${panX}px,${panY}px) scale(${zoom})`, transformOrigin: '0 0' }}>
-
-            {/* side-by-side: images only, slider is outside the transform */}
+          style={{ cursor: actionRef.current==='split' ? 'col-resize' : actionRef.current==='pan' ? 'grabbing' : zoom > 1.02 ? 'grab' : 'default' }}>
+          <div ref={innerRef} className="absolute w-full h-full" style={{ transformOrigin: '0 0' }}>
             {viewMode === 'side-by-side' && sourceDataUrl && svg && (
               <div className="relative w-full h-full">
-                <img src={sourceDataUrl} alt=""
-                  className="absolute inset-0 w-full h-full"
-                  style={{ objectFit: 'contain', clipPath: `inset(0 ${100-splitPos}% 0 0)` }}
-                  draggable={false} />
-                <img src={svg} alt=""
-                  className="absolute inset-0 w-full h-full"
-                  style={{ objectFit: 'contain', clipPath: `inset(0 0 0 ${splitPos}%)` }}
-                  draggable={false} />
+                <img src={sourceDataUrl} alt="" className="absolute inset-0 w-full h-full"
+                  style={{ objectFit: 'contain', clipPath: `inset(0 ${100-splitPos}% 0 0)` }} draggable={false} />
+                <img src={svg} alt="" className="absolute inset-0 w-full h-full"
+                  style={{ objectFit: 'contain', clipPath: `inset(0 0 0 ${splitPos}%)` }} draggable={false} />
               </div>
             )}
-
             {viewMode === 'original' && sourceDataUrl && (
               <img src={sourceDataUrl} alt="" className="max-w-full max-h-full object-contain" draggable={false} />
             )}
@@ -177,7 +188,6 @@ export function CompareViewer() {
           </div>
         </div>
 
-        {/* ── split slider — fixed on screen, outside canvas transform ── */}
         {viewMode === 'side-by-side' && svg && sourceDataUrl && (
           <div className="absolute inset-0 pointer-events-none z-10">
             <div data-handle className="absolute top-0 bottom-0 cursor-col-resize pointer-events-auto"
@@ -190,12 +200,7 @@ export function CompareViewer() {
           </div>
         )}
 
-        {/* empty state */}
-        {showEmpty && (
-          <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm">
-            上传图片开始转换
-          </div>
-        )}
+        {showEmpty && <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm">上传图片开始转换</div>}
       </div>
     </div>
   );

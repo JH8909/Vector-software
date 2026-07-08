@@ -66,6 +66,15 @@ export interface ExportSettings {
   background: BackgroundMode;
 }
 
+/** 图层信息 */
+export interface LayerInfo {
+  id: string;
+  name: string;
+  fill: string;
+  visible: boolean;
+  type: string;
+}
+
 /** 应用状态 */
 export interface AppState {
   // 上传
@@ -85,9 +94,15 @@ export interface AppState {
   // 质量报告
   qualityReport: QualityReport | null;
 
+  // 图层
+  layers: LayerInfo[];
+  layeredSvg: string | null;     // 带 <g> 分层的原始 SVG
+  flatSvg: string | null;        // 扁平化（无 <g>）SVG
+
   // 导出
   exportSettings: ExportSettings;
   showExportDialog: boolean;
+  exportLayered: boolean;        // true=保留图层结构, false=扁平化
 
   // Actions
   setSourceFile: (file: File) => Promise<void>;
@@ -97,10 +112,12 @@ export interface AppState {
   setSettings: (settings: Partial<VectorSettings>) => void;
   setExportSettings: (settings: Partial<ExportSettings>) => void;
   setShowExportDialog: (show: boolean) => void;
+  toggleLayer: (id: string) => void;
+  setExportLayered: (v: boolean) => void;
   reset: () => void;
 }
 
-/** 通用最佳默认 — α=0.7 黄金点：直角全L、圆弧15C */
+/** 通用最佳默认 — α=0.7 黄金点 + 连通组件分层 */
 export const DEFAULT_SETTINGS: VectorSettings = {
   mode: 'logo_color',
   colorCount: 8,
@@ -108,7 +125,7 @@ export const DEFAULT_SETTINGS: VectorSettings = {
   pathPrecision: 70,
   smoothness: 50,
   cornerPreservation: 60,
-  minArea: 5,
+  minArea: 15,
 };
 
 export const DEFAULT_EXPORT: ExportSettings = {
