@@ -44,7 +44,7 @@ export function getImageData(img: HTMLImageElement): {
   return { imageData: ctx.getImageData(0, 0, w, h), usedWidth: w, usedHeight: h, canvas };
 }
 
-// ── 掩码反锯齿（核心：亚像素边缘） ───────────────────
+// ── 掩码反锯齿 ───────────────────────────────────────
 //
 // 二值掩码只有 0/255，Potrace 沿像素对角线追踪 → 锯齿
 // 解法：3×3 box blur 在硬边处生成灰度过渡带(128±64)，
