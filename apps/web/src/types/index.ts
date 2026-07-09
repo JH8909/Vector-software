@@ -117,15 +117,15 @@ export interface AppState {
   reset: () => void;
 }
 
-/** 通用最佳默认 — α=0.7 黄金点 + 连通组件分层 */
+/** 通用最佳默认 — 保守识别优先 */
 export const DEFAULT_SETTINGS: VectorSettings = {
   mode: 'logo_color',
-  colorCount: 8,
-  noiseReduction: 15,
-  pathPrecision: 70,
-  smoothness: 50,
-  cornerPreservation: 60,
-  minArea: 15,
+  colorCount: 6,
+  noiseReduction: 18,
+  pathPrecision: 55,
+  smoothness: 55,
+  cornerPreservation: 50,
+  minArea: 12,
 };
 
 export const DEFAULT_EXPORT: ExportSettings = {

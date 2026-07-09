@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Upload, Loader2 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
+import { isValidImageFile } from '@/lib/utils/image';
 
 export default function HomePage() {
   const router = useRouter();
@@ -12,9 +13,7 @@ export default function HomePage() {
 
   const handleFile = useCallback(
     async (file: File) => {
-      // 1. 快速校验
-      const validTypes = ['image/png', 'image/jpeg', 'image/webp'];
-      if (!validTypes.includes(file.type)) {
+      if (!isValidImageFile(file)) {
         alert('仅支持 PNG、JPG、WebP 格式');
         return;
       }
@@ -23,16 +22,15 @@ export default function HomePage() {
         return;
       }
 
-      // 2. 只做图片读取 + 分析（不矢量化）→ 快速跳转
+      // 读取图片并立即开始矢量化，再跳转工作台
       setLoading(true);
       try {
-        await useStore.getState().prepareFile(file);
+        await useStore.getState().setSourceFile(file);
       } catch (err) {
         setLoading(false);
         alert(err instanceof Error ? err.message : '图片读取失败');
         return;
       }
-      // 3. 立即跳转到工作台（工作台会自动开始矢量化）
       router.push('/workspace');
     },
     [router]

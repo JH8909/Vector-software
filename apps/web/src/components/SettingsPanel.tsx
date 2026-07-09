@@ -4,13 +4,6 @@ import { useCallback } from 'react';
 import { useStore } from '@/store/useStore';
 import { VectorMode } from '@/types';
 
-const MODE_INFO: Record<VectorMode, { label: string; desc: string }> = {
-  line_art: { label: '黑白线稿', desc: '线稿、文字、黑白 Logo' },
-  logo_color: { label: 'Logo 色块', desc: 'Logo、图标、简约图形' },
-  illustration_color: { label: '插画色块', desc: '插画、贴纸、包装图形' },
-  high_precision: { label: '高精度轮廓', desc: '细节丰富、照片风格化' },
-};
-
 type ModeOrder = readonly { key: VectorMode; label: string; desc: string; bestFor: string }[];
 
 const MODES: ModeOrder = [
@@ -20,20 +13,10 @@ const MODES: ModeOrder = [
   { key: 'high_precision', label: '高精度轮廓', desc: '细节丰富、照片风格', bestFor: '适合复杂渐变和写实风格' },
 ];
 
-const SLIDERS = [
-  { key: 'colorCount' as const, label: '颜色数量', min: 2, max: 24, step: 1,
-    tip: (v: number) => `追踪 ${v} 种颜色${v <= 4 ? ' — 干净色块' : v <= 8 ? ' — 标准' : v <= 16 ? ' — 丰富层次' : ' — 接近照片'}` },
-  { key: 'noiseReduction' as const, label: '去噪强度', min: 0, max: 100, step: 1,
-    tip: (v: number) => `忽略 <${Math.round(v * 0.12)}px 斑点${v < 20 ? ' — 保留细节' : v < 50 ? ' — 标准去噪' : ' — 激进去噪'}` },
-  { key: 'pathPrecision' as const, label: '路径精度', min: 10, max: 100, step: 1,
-    tip: (v: number) => `拟合容差 ${(0.8 - v * 0.0077).toFixed(2)}px${v < 40 ? ' — 宽松简化' : v < 70 ? ' — 均衡' : ' — 精准拟合'}` },
-  { key: 'smoothness' as const, label: '边缘平滑', min: 0, max: 100, step: 1,
-    tip: (v: number) => `Potrace α=${(0.18+v*0.008).toFixed(2)} ${v < 30 ? '— 直角优先' : v < 60 ? '— 均衡' : v < 85 ? '— 圆弧平滑' : '— 高度曲线'}` },
-  { key: 'cornerPreservation' as const, label: '角点保留', min: 0, max: 100, step: 1,
-    tip: (v: number) => `Potrace α=${(1.0-v*0.005).toFixed(2)} ${v < 30 ? '— 全曲线' : v < 60 ? '— 均衡' : v < 85 ? '— 保持直角' : '— 严格L段'}` },
-  { key: 'minArea' as const, label: '碎片过滤', min: 0, max: 50, step: 1,
-    tip: (v: number) => `丢弃 <${Math.max(5, v * 3)} 像素色块${v < 5 ? ' — 保留所有' : v < 15 ? ' — 轻量过滤' : v < 30 ? ' — 标准' : ' — 仅大色块'}` },
-];
+/** 与 makeOpts 一致：α = clamp(0.55 + sf - cf*0.45, 0.15, 1.35) */
+function tipAlpha(smoothness: number, corner: number) {
+  return Math.max(0.15, Math.min(1.35, 0.55 + (smoothness / 100) * 1.0 - (corner / 100) * 0.45));
+}
 
 export function SettingsPanel() {
   const settings = useStore((s) => s.settings);
@@ -43,6 +26,39 @@ export function SettingsPanel() {
   const onSlider = useCallback((key: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
     setSettings({ [key]: Number(e.target.value) });
   }, [setSettings]);
+
+  const sliderTips: Record<string, (v: number) => string> = {
+    colorCount: (v) =>
+      `追踪 ${Math.min(v, 16)} 种颜色${v <= 1 ? ' — 单色无描边' : v <= 4 ? ' — 干净色块' : v <= 8 ? ' — 标准' : ' — 丰富层次'}`,
+    noiseReduction: (v) => {
+      const turd = Math.round((v / 100) * 12);
+      const nb = v <= 0 ? 0 : v < 20 ? 1 : v < 40 ? 2 : v < 60 ? 3 : v < 80 ? 4 : 5;
+      return `掩码邻域≥${nb} + turdSize=${turd}${v < 20 ? ' — 保留细节' : v < 50 ? ' — 标准去噪' : ' — 激进去噪'}`;
+    },
+    pathPrecision: (v) => {
+      const tol = Math.max(0.06, 0.55 - (v / 100) * 0.42);
+      return `拟合容差 ${tol.toFixed(2)}px${v < 40 ? ' — 宽松简化' : v < 70 ? ' — 均衡' : ' — 精准拟合'}`;
+    },
+    smoothness: (v) => {
+      const a = tipAlpha(v, settings.cornerPreservation);
+      return `α=${a.toFixed(2)} ${v < 30 ? '— 直角优先' : v < 60 ? '— 均衡' : v < 85 ? '— 圆弧平滑' : '— 高度曲线'}`;
+    },
+    cornerPreservation: (v) => {
+      const a = tipAlpha(settings.smoothness, v);
+      return `α=${a.toFixed(2)} ${v < 30 ? '— 全曲线' : v < 60 ? '— 均衡' : v < 85 ? '— 保持直角' : '— 严格直角'}`;
+    },
+    minArea: (v) =>
+      `丢弃 <${Math.max(30, v * 8)} 像素色块${v < 5 ? ' — 保留较多' : v < 15 ? ' — 轻量过滤' : v < 30 ? ' — 标准' : ' — 仅大色块'}`,
+  };
+
+  const SLIDERS = [
+    { key: 'colorCount' as const, label: '颜色数量', min: 1, max: 16, step: 1 },
+    { key: 'noiseReduction' as const, label: '去噪强度', min: 0, max: 100, step: 1 },
+    { key: 'pathPrecision' as const, label: '路径精度', min: 10, max: 100, step: 1 },
+    { key: 'smoothness' as const, label: '边缘平滑', min: 0, max: 100, step: 1 },
+    { key: 'cornerPreservation' as const, label: '角点保留', min: 0, max: 100, step: 1 },
+    { key: 'minArea' as const, label: '碎片过滤', min: 0, max: 50, step: 1 },
+  ];
 
   return (
     <div className="compact-card p-3">
@@ -81,7 +97,7 @@ export function SettingsPanel() {
               </div>
               <input type="range" min={s.min} max={s.max} step={s.step}
                 value={val} onChange={onSlider(s.key)} className="compact-slider" />
-              <p className="text-[10px] text-gray-400 mt-0.5 leading-tight">{s.tip(val)}</p>
+              <p className="text-[10px] text-gray-400 mt-0.5 leading-tight">{sliderTips[s.key](val)}</p>
             </div>
           );
         })}

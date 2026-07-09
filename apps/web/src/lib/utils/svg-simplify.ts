@@ -205,19 +205,85 @@ export function minifySVG(svg: string): string {
 }
 
 /**
- * 从 SVG 中移除面积过小的路径
- * 基于路径字符串长度近似估计（精确面积计算开销大）
+ * 从 SVG 中移除过小路径
+ * 优先用路径坐标包围盒面积；回退到 d 字符串长度
  */
 export function removeTinyPaths(svg: string, minLength = 20): string {
-  // 提取所有 path 标签
   return svg.replace(/<path[^>]*\/>/g, (match) => {
-    // 如果 d 属性太短，说明路径很小
     const dMatch = match.match(/d="([^"]*)"/);
-    if (dMatch && dMatch[1].length < minLength) {
-      return '';
+    if (!dMatch) return match;
+    const d = dMatch[1];
+    const area = approxPathBBoxArea(d);
+    if (area >= 0) {
+      // minLength 近似映射为最小包围盒面积；阈值放宽，避免误删细节
+      const minArea = Math.max(2, minLength * 0.15);
+      if (area < minArea) return '';
+      return match;
     }
+    if (d.length < minLength) return '';
     return match;
   });
+}
+
+/** 将 compound path 的 d 拆成子路径（每个以 M/m 起头） */
+function splitSubpaths(d: string): string[] {
+  const subs: string[] = [];
+  const re = /[Mm][^Mm]*/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(d)) !== null) {
+    const s = m[0].trim();
+    if (s) subs.push(s);
+  }
+  return subs;
+}
+
+/**
+ * 移除 compound path 内的小碎块子路径（残留小色块）。
+ *
+ * 用「包围盒面积」而非多边形面积作阈值：
+ * - 抗锯齿碎块两个方向都很小 → 包围盒小 → 删除
+ * - 细长线条/描边一个方向很长 → 包围盒大 → 保留（不误删线稿）
+ *
+ * 至少保留最大的一个子路径，避免整层被清空。
+ */
+export function removeTinySubpaths(svg: string, minArea = 16): string {
+  if (minArea <= 0) return svg;
+  return svg.replace(/d="([^"]*)"/g, (full, d: string) => {
+    const subs = splitSubpaths(d);
+    if (subs.length <= 1) return full;
+    const kept: string[] = [];
+    let maxIdx = 0, maxArea = -1;
+    for (let i = 0; i < subs.length; i++) {
+      const area = approxPathBBoxArea(subs[i]);
+      if (area > maxArea) { maxArea = area; maxIdx = i; }
+      // area < 0 表示无法估算 → 保守保留
+      if (area < 0 || area >= minArea) kept.push(subs[i]);
+    }
+    if (kept.length === 0) kept.push(subs[maxIdx]);
+    return `d="${kept.join(' ')}"`;
+  });
+}
+
+/** 从 path d 提取数字坐标，估算轴对齐包围盒面积；失败返回 -1 */
+function approxPathBBoxArea(d: string): number {
+  const nums = d.match(/-?\d*\.?\d+/g);
+  if (!nums || nums.length < 4) return -1;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let i = 0;
+  // 粗略：按成对 x,y 消费（对 C/Q 控制点也计入，略放大 bbox，可接受）
+  while (i + 1 < nums.length) {
+    const x = parseFloat(nums[i]);
+    const y = parseFloat(nums[i + 1]);
+    if (!Number.isNaN(x) && !Number.isNaN(y)) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    i += 2;
+  }
+  if (!Number.isFinite(minX) || maxX <= minX || maxY <= minY) return -1;
+  return (maxX - minX) * (maxY - minY);
 }
 
 /**
@@ -226,18 +292,29 @@ export function removeTinyPaths(svg: string, minLength = 20): string {
 export function optimizeSVGOutput(svg: string, options?: {
   simplifyTolerance?: number;
   minPathLength?: number;
+  minSubpathArea?: number;
   minify?: boolean;
 }): string {
-  const { simplifyTolerance = 0.8, minPathLength = 15, minify = true } = options || {};
+  const {
+    simplifyTolerance = 0.8,
+    minPathLength = 15,
+    minSubpathArea = 0,
+    minify = true,
+  } = options || {};
   let result = svg;
 
   // 1. 简化路径
   result = simplifySVGPaths(result, simplifyTolerance);
 
-  // 2. 移除小路径
+  // 2. 移除 compound path 内的碎块子路径（残留小色块）
+  if (minSubpathArea > 0) {
+    result = removeTinySubpaths(result, minSubpathArea);
+  }
+
+  // 3. 移除整条小路径
   result = removeTinyPaths(result, minPathLength);
 
-  // 3. 压缩
+  // 4. 压缩
   if (minify) {
     result = minifySVG(result);
   }

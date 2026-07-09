@@ -4,6 +4,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Upload, Download, RefreshCw } from 'lucide-react';
 import { useStore } from '@/store/useStore';
+import { isValidImageFile } from '@/lib/utils/image';
 import { ImageInfoPanel } from '@/components/ImageInfoPanel';
 import { CompareViewer } from '@/components/CompareViewer';
 import { SettingsPanel } from '@/components/SettingsPanel';
@@ -14,7 +15,6 @@ import { QualityReportPanel } from '@/components/QualityReportPanel';
 export default function WorkspacePage() {
   const router = useRouter();
   const sourceDataUrl = useStore((s) => s.sourceDataUrl);
-  const sourceFile = useStore((s) => s.sourceFile);
   const svgResult = useStore((s) => s.svgResult);
   const layeredSvg = useStore((s) => s.layeredSvg);
   const exportLayered = useStore((s) => s.exportLayered);
@@ -24,68 +24,63 @@ export default function WorkspacePage() {
   const imageInfo = useStore((s) => s.imageInfo);
   const reset = useStore((s) => s.reset);
   const startConversion = useStore((s) => s.startConversion);
-  const prepareFile = useStore((s) => s.prepareFile);
+  const setSourceFile = useStore((s) => s.setSourceFile);
+  const restoreFromCache = useStore((s) => s.restoreFromCache);
 
   const uploadRef = useRef<HTMLInputElement>(null);
   const linkRef = useRef<HTMLAnchorElement>(null);
-  const startedRef = useRef(false);
-  const fileRef = useRef<File | null>(null);
+  const hydratedRef = useRef(false);
 
-  // 恢复
+  // 首次进入：从 session 恢复，或补触发尚未开始的转换
   useEffect(() => {
-    if (!sourceDataUrl) {
+    if (hydratedRef.current) return;
+    hydratedRef.current = true;
+
+    const state = useStore.getState();
+    if (!state.sourceDataUrl) {
       const stored = sessionStorage.getItem('vf_dataurl');
-      if (stored) useStore.getState().restoreFromCache(stored);
+      if (stored) {
+        restoreFromCache(stored);
+        void startConversion();
+        return;
+      }
     }
-  }, [sourceDataUrl]);
 
-  // 自动转换
-  useEffect(() => {
-    if (sourceDataUrl && sourceFile && !startedRef.current) {
-      startedRef.current = true;
-      fileRef.current = sourceFile;
-      startConversion();
+    if (state.sourceDataUrl && !state.svgPreviewUrl && state.jobStatus !== 'processing') {
+      void startConversion();
     }
-  }, [sourceDataUrl, sourceFile, startConversion]);
+  }, [restoreFromCache, startConversion]);
 
-  useEffect(() => {
-    if (jobStatus === 'failed') startedRef.current = false;
-  }, [jobStatus]);
-
-  useEffect(() => {
-    if (sourceFile && fileRef.current && sourceFile !== fileRef.current) {
-      startedRef.current = false;
-      fileRef.current = sourceFile;
+  const ingestFile = useCallback(async (file: File) => {
+    if (!isValidImageFile(file)) {
+      alert('仅支持 PNG、JPG、WebP 格式');
+      return;
     }
-  }, [sourceFile]);
+    if (file.size > 20 * 1024 * 1024) {
+      alert('文件大小不能超过 20MB');
+      return;
+    }
+    await setSourceFile(file);
+  }, [setSourceFile]);
 
-  // ── 上传 ──
   const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!['image/png','image/jpeg','image/webp'].includes(file.type)) { alert('仅支持 PNG、JPG、WebP 格式'); return; }
-    if (file.size > 20*1024*1024) { alert('文件大小不能超过 20MB'); return; }
-    startedRef.current = false;
-    await prepareFile(file);
+    await ingestFile(file);
     if (uploadRef.current) uploadRef.current.value = '';
-  }, [prepareFile]);
+  }, [ingestFile]);
 
   const onDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); }, []);
   const onDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
-    if (!file) return;
-    if (!['image/png','image/jpeg','image/webp'].includes(file.type)) { alert('仅支持 PNG、JPG、WebP 格式'); return; }
-    if (file.size > 20*1024*1024) { alert('文件大小不能超过 20MB'); return; }
-    startedRef.current = false;
-    await prepareFile(file);
-  }, [prepareFile]);
+    if (file) await ingestFile(file);
+  }, [ingestFile]);
 
-  // ── 一键导出 SVG（按 exportLayered 选择分层或扁平） ──
   const exportSVG = useCallback(() => {
     const out = exportLayered ? layeredSvg : svgResult;
     if (!out) return;
-    const base = (imageInfo?.name || 'vector').replace(/\.[^.]+$/,'') + (exportLayered ? '_layered' : '') + '.svg';
+    const base = (imageInfo?.name || 'vector').replace(/\.[^.]+$/, '') + (exportLayered ? '_layered' : '') + '.svg';
     const blob = new Blob([out], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = linkRef.current;
@@ -95,7 +90,6 @@ export default function WorkspacePage() {
 
   return (
     <div className="h-screen flex flex-col bg-gray-50" onDragOver={onDragOver} onDrop={onDrop}>
-      {/* Top bar */}
       <header className="flex items-center justify-between px-4 py-2 bg-white border-b border-gray-200 shrink-0 gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <button onClick={() => { reset(); router.push('/'); }} className="shrink-0 flex items-center gap-1.5 text-gray-500 hover:text-gray-700">
@@ -108,7 +102,14 @@ export default function WorkspacePage() {
           <button onClick={() => uploadRef.current?.click()} className="compact-btn-secondary text-xs shrink-0">
             <Upload className="w-3 h-3" /><span className="hidden sm:inline">上传图片</span>
           </button>
-          <input ref={uploadRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={handleUpload} />
+          <input
+            ref={uploadRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+            className="sr-only"
+            style={{ position: 'absolute', width: 1, height: 1, opacity: 0, overflow: 'hidden' }}
+            onChange={handleUpload}
+          />
           {imageInfo && (
             <span className="text-xs text-gray-400 truncate hidden sm:inline">
               {imageInfo.name} · {imageInfo.width}×{imageInfo.height}
@@ -125,7 +126,7 @@ export default function WorkspacePage() {
       {jobStatus === 'failed' && errorMessage && (
         <div className="mx-4 mt-2 px-3 py-2 bg-red-50 border border-red-200 rounded-md text-sm text-red-700 flex items-center justify-between">
           <span>{errorMessage}</span>
-          <button onClick={() => { startedRef.current = false; startConversion(); }}
+          <button onClick={() => void startConversion()}
             className="flex items-center gap-1 text-red-600 hover:text-red-800 text-xs font-medium">
             <RefreshCw className="w-3 h-3" />重试
           </button>
